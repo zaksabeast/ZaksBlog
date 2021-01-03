@@ -1,0 +1,658 @@
+import Button from '@material-ui/core/Button';
+
+export const metadata = {
+  title: 'Emulating Wishmaker without Dolphin',
+  description:
+    'Writing a patch to get a Wishmaker Jirachi on emulator without Dolphin',
+  date: '01/02/2021',
+};
+
+# Emulating Wishmaker without Dolphin
+
+In the early 2000's, there were a few Pokemon that couldn't be obtained through the normal gameplay of a Gameboy Advance Pokemon game. Most of those Pokemon could only be obtained through time specific events, such as going to a live event, so they can no longer be obtained today.
+
+One of the very few that is still obtainable is the Wishmaker Jirachi. The Wishmaker is obtained from a Gamecube disc that came with the preorder of Pokemon Colosseum.
+
+The setup to get the Jirachi can be bit tedious. A player needs to dust off their old Gamecube, find a Gameboy Advance to Gamecube link cable, hope their Colosseum bonus disc still works, etc.
+
+In this case, emulators are even more tedious to set up. Connecting a Gamecube and Gameboy Advance emulator is a very niche use case that is finnicky at best and often doesn't work. Besides that, many people don't have a computer strong enough to run a Gamecube emulator.
+
+There's a specific Pokemon community that enjoys manipulating the random number generation in Pokemon games for challenging gameplay with extra rewards. They'll often use emulators for the extra benefits emulators can provide, so the difficulties of getting a Wishmaker Jirachi on an emulator is a bit of a pain point.
+
+Since I was already digging into how the Wishmaker multiboot rom worked to build a portable Wishmaker distributor, I figured I would do one other Wishmaker project: get Wishmaker to run on a Gameboy Advance emulator without a Gamecube emulator.
+
+In my last post, I described how the logic of creating and saving a Jirachi happens on the Gameboy Advance and how the Gamecube is purely used to put the Wishmaker multiboot rom on the Gameboy Advance. If the multiboot rom is loaded directly into an emulator, a Gamecube emulator should be completely uncessary.
+
+Ideally a user should only need:
+
+- A Gameboy Advance emulator
+- The Wishmaker multiboot rom
+- The save file of a Pokemon game they want Jirachi added to
+
+## Why am I writing this?
+
+This patch didn't take long to make. In fact, I spent significantly more time writing this blog post than I did writing the patch.
+
+I'm writing this because there's a decent amount of discovery that goes into reverse engineering software, a process most people never see or hear about, and recently I've wanted to share these adventures more often.
+
+Entire books could be written about reverse engineering small fragments of code, so this post is barely going to scratch the tip of the iceberg.
+
+Because this post is going to be pretty lengthy already, I'm only going to focus on the Jirachi mechanics and won't be talking about the [berry glitch](https://www.serebii.net/rubysapphire/berryglitch.shtml) mechanics.
+
+## Loading a Pokemon save
+
+Normally the Wishmaker rom expects a cartridge inserted into the Gameboy Advance so it can access the save file on the cartridge.
+
+To an emulator, the game and save normally found on the cartridge can be two completely separate pieces of data, so the emulator should be able to load a Pokemon Ruby/Sapphire save without the a Pokemon Ruby/Sapphire game.
+
+When an emulator loads a game, it usually loads a save file with the same name, but with a `.sav` extension. For example, if the Wishmaker multiboot rom is called `wishmaker.bin`, then most emulators will try to load `wishmaker.sav`.
+
+Using the method described in my last blog post, I had already extracted the Wishmaker multiboot rom. From there, I used my Wii with [gba-link-cable-dumper](https://github.com/FIX94/gba-link-cable-dumper) to extract a save file from a Pokemon Ruby cartridge.
+
+By naming the Ruby save to `wishmaker.sav`, the emulator loaded my Pokemon Ruby save as if it was coming from an inserted cartridge.
+
+## Incompatible games
+
+It's widely known the Wishmaker Jirachi can only be sent to two games: Pokemon Ruby and Pokemon Sapphire. It would be a big problem if Wishmaker tried to overwrite data for a completely different game by mistake.
+
+Because Wishmaker checks to make sure the inserted game is Pokemon Ruby or Sapphire, but the rom running on the emulator is Wishmaker, I needed find where Wishmaker checks the inserted cartridge and patch it to think a valid cartridge is always inserted.
+
+## Finding the game check
+
+One of the initial Wishmaker routines _very_ roughly looks like:
+
+```cpp
+// Called from the main loop
+void runApp() {
+  setUpGraphics();
+
+  gamecubeHandshake();
+
+  u32 result = transferJirachiAndFixBerryGlitch();
+
+  switch (result) {
+    case 0:
+      printSuccessToUser();
+      break;
+    // Handle error cases and send errors to Gamecube
+  }
+
+  freezeExectution();
+}
+```
+
+`transferJirachiAndFixBerryGlitch` does a few things:
+
+- Transfers the Jirachi
+- Updates save checksums
+- Prints Jirachi transfer errors to the user
+
+That last thing was particularly helpful. Text such as a URL, debug info, or strings displayed to a user is valuable information to determine what the relative logic is doing.
+
+The original function to print errors looked something like this:
+
+```cpp
+void printTransferErrorToScreen(u32 r0) {
+    char *text;
+
+    switch (r0) {
+    case 1:
+        text = "Error:\n  There is no save file.";
+        break;
+    case 2:
+        text = "Error:\n The save file is corrupted.";
+        break;
+    // etc.
+    }
+
+    printCenteredText(text, 1, 2, 27, 7, 0);
+}
+```
+
+The value passed into this function is the result of the transfer. Because the errors are written in human-readable text, I was able to create an enum that described all possible outcomes of a transfer (including all reasons for failure):
+
+```cpp
+enum TransferResult {
+  SUCCESS = 0x1,
+  NO_SAVE = 0x2,
+  CORRUPTED_SAVE = 0x3,
+  GAME_NOT_NA = 0x4,
+  NO_SAVE_2 = 0x5,
+  SAVE_FAILURE = 0x6,
+  NO_POKEDEX = 0x7,
+  PARTY_IS_FULL = 0x8,
+  CORRUPTED_SAVE_2 = 0x9,
+  ALREADY_RECEIVED_JIRACHI = 0xA,
+  VERSION_NOT_COMPATIBLE = 0xB
+};
+
+void printTransferErrorToScreen(enum TransferResult transferResult) {
+    char *error;
+
+    switch (transferResult) {
+    case NO_SAVE:
+        error = "Error:\n  There is no save file.";
+        break;
+    case CORRUPTED_SAVE:
+        error = "Error:\n The save file is corrupted.";
+        break;
+    case GAME_NOT_NA:
+        error = "Error: Unable to transfer\nJIRACHI to a Pok\x1bmon Ruby\nor Sapphire Game Pak that\nis not aNorth American\nversion.";
+        break;
+    case NO_SAVE_2:
+        error = "Error:\n  There is no save file.";
+        break;
+    case SAVE_FAILURE:
+        error = "Error: Save failure.";
+        break;
+    case NO_POKEDEX:
+        error = "Error:\n You don\'t have a POK\x1bDEX.\n You cannot receive JIRACHI\n as a gift right now.\n";
+        break;
+    case PARTY_IS_FULL:
+        error = "Error:\n Your Pok\x1bmon party is full.";
+        break;
+    case CORRUPTED_SAVE_2:
+        error = "Error:\n The save file is corrupted.";
+        break;
+    case ALREADY_RECEIVED_JIRACHI:
+        error = "Error:\nYou already have been given\nJIRACHI as a gift. You can\nonly receive one JIRACHI\nperGame Pak.";
+        break;
+    case VERSION_NOT_COMPATIBLE:
+        error = "Error:\n This version is not\n    compatible.";
+        break;
+    default:
+        return;
+    }
+
+    printCenteredText(error, 1, 2, 27, 7, 0);
+}
+```
+
+With that, I had all the possible ways the app could fail. I named the function responsible for creating the transfer result `transferJirachi`, and took a look at what it does. It roughly looks like:
+
+```cpp
+enum TransferResult transferJirachi() {
+  u8 func1Result = func1();
+
+  GLOBAL_1 = func1Result;
+
+  if (func1Result != 0x11) {
+    return VERSION_NOT_COMPATIBLE;
+  }
+
+  // etc.
+}
+```
+
+The very first thing that happens is `func1` creates `func1Result`, which can cause a `VERSION_NOT_COMPATIBLE` error. `func1` must get a game code, and `func1Result` must be the game code:
+
+```cpp
+enum TransferResult transferJirachi() {
+  u8 gameCode = getGameCode();
+
+  G_GAME_CODE = gameCode;
+
+  if (gameCode != 0x11) {
+    return VERSION_NOT_COMPATIBLE;
+  }
+
+  // etc.
+}
+```
+
+At this point it would have been simple to patch out the check entirely so the `VERSION_NOT_COMPATIBLE` error would be impossible to get, but there were at least a few reasons why I felt patching `getGameCode` would be better:
+
+- The multiboot rom was setting global variables everywhere, so understanding `getGameCode` might help reverse engineer other routines
+- It looked like `getGameCode` was only used in this one location, but the patch would fail if that assumption was incorrect (which would cause uncessary debugging and reverse engineering work)
+- The intent of the patch was not to remove the single game check, but to make Wishmaker think a legitimate game was inserted, no matter the reason. Because of this, patching the underlying logic was the correct approach
+
+## Getting the game code
+
+`getGameCode` roughly looks like:
+
+```cpp
+u32 getGameCode() {
+  u32 titleId = 0;
+
+  dmaCopy(&titleId, ROM_TITLE_ID_LOCATION, 4);
+
+  u32 titleIdWithoutLanguage = trimLanguage(titleId);
+
+  bool isSapphire = strcmp(titleIdWithoutLanguage, "AXP") == 0;
+  bool isRuby = strcmp(titleIdWithoutLanguage, "AXV") == 0;
+
+  if (isSapphire || isRuby) {
+    bool isJapaneseSapphire = strcmp(titleId, "AXPJ") == 0;
+    bool isJapaneseRuby = strcmp(titleId, "AXVJ") == 0;
+
+    if (isJapaneseSapphire || isJapaneseRuby) {
+      return 0x10;
+    }
+
+    bool isEnglishSapphire = strcmp(titleId, "AXPE") == 0;
+    bool isEnglishRuby = strcmp(titleId, "AXVE") == 0;
+
+    if (isEnglishSapphire || isEnglishRuby) {
+      return 0x11;
+    }
+
+    return 0x12;
+  }
+
+  // Same checks for Fire Red and Leaf Green
+
+  // Same checks for a third time, but only for language instead of a specific game
+}
+```
+
+Title Ids are unique codes given to each game. `strcmp` was very obviously comparing strings, so it and all the variable names were pretty easy to label.
+
+If the result of this function is not 0x11 (English Ruby or Sapphire), `transferJirachi` will return the `VERSION_NOT_COMPATIBLE` error. As long as this function returns 0x11, the check will always succeed.
+
+I made the patch by jumping straight to the `return 0x11` statement. `getGameCode` effectively became:
+
+```cpp
+u32 getGameCode() {
+  return 0x11; // English Ruby or Sapphire
+}
+```
+
+Fun fact: A long time ago I read there was evidence Pokemon Fire Red and Leaf Green might have also been planned to receive the Wishmaker Jirachi at some point. This function checks the title Ids for Fire Red and Leaf Green, which does indeed seem to indicate they also might have been planned to get Jirachi earlier in development.
+
+This was both fun and heartbreaking to find.
+
+## Other potential issues
+
+The transfer result enum showed where the Pokemon Ruby and Sapphire check existed, but it also gave some more info: a list of all other possible issues.
+
+This is the list of potential issues:
+
+- No Pokedex
+- Already received Jirachi
+- Party is full
+- Game isn't North American
+- Game not compatible
+- No save
+- No save (2)
+- Corrupted save
+- Corrupted save (2)
+- Save failure
+
+When a player starts a Pokemon journey, they get a Pokedex to catalogue all the Pokemon they've seen and caught. A player receives their Pokedex after choosing their first Pokemon, and can hold up to 6 Pokemon at a time for battling other Pokemon. Any other Pokemon must be in a special in-game storage.
+
+The first three potential problems all relate to those mechanics:
+
+- A player needs a Pokedex to receive Jirachi
+- A player can only receive one Jirachi
+- The Jirachi is put in the player's party, so the Player can only hold 1-5 Pokemon to get a Jirachi
+
+All of those issues could be ignored. If the game runs into any of those issues it means the Wishmaker rom is trying to transfer the Jirachi, so any patches I wrote must have been successful.
+
+The next two issues involve the game check that I already patched out, so they could also be ignored.
+
+The final five issues all seemed valid as well. A game without a save can't get a Jirachi, and a corrupted save shouldn't be modified since it's broken. If the save failed for any reason, something went wrong and the user should know.
+
+What I found odd was how there were two identical "No save" and two identical "Corrupted save" errors. There's no reason to have two different failure results for one purpose. If the save truly was corrupted, the development team would have only needed one "save corrupted" error, not two.
+
+This begs the juicy question: what reasons for failure did the development team not want users to be aware of?
+
+## Save handling
+
+The remainder of `transferJirachi` _very_ roughly looks like:
+
+```cpp
+enum TransferResult transferJirachi() {
+  // Game version check
+
+  func1();
+
+  if (func2() == false) {
+    return CORRUPTED_SAVE_2;
+  }
+
+  u32 func3Result = func3();
+
+  if (func3Result != 1) {
+    return func4(func3Result, 0);
+  }
+
+  // Checks and error handling for everything not related to Pokemon Ruby/Sapphire or the save
+
+  return func5();
+}
+```
+
+If `func4` is returned from `transferJirachi`, and `transferJirachi` returns `TransferResult`, then `func4` must also return a `TransferResult`.
+
+A quick peek at `func4` showed it could return `NO_SAVE_2`, `CORRUPTED_SAVE_2`, and `CORRUPTED_SAVE`.
+
+I deduced the following from this structure:
+
+- `func2` has to do with some sort of save validation since it causes the `CORRUPTED_SAVE_2` error
+- `func4` creates save related errors based off the result of `func3`, so `func3` must have something to do with saves too
+- `func1` occurs before any of the save-related functions and doesn't have a return value, so it must be setting up something related to saves
+- `func5` only runs after all possible checks to transfer the Jirachi have passed, so it's responsible for creating and saving the Jirachi
+
+The original psuedo-code with labels:
+
+```cpp
+enum TransferResult transferJirachi() {
+  // Game version check
+
+  configureSaveStuff();
+
+  if (validateSave() == false) {
+    return CORRUPTED_SAVE_2;
+  }
+
+  u32 saveResult = getSaveResult();
+
+  if (saveResult != 1) {
+    return convertSaveErrorToTransferError(saveResult, 0);
+  }
+
+  // Checks and error handling for everything not related to Pokemon Ruby/Sapphire or the save
+
+  return createAndSaveJirachi();
+}
+```
+
+As far as I could tell, there was no way to get the `NO_SAVE` error, so the development team removed whatever would explicitly cause that. But again, `convertSaveErrorToTransferError` returning both `CORRUPTED_SAVE_2` and `CORRUPTED_SAVE` seemed suspicious and worth investigating.
+
+## Save blocks and offsets
+
+I've worked with Gameboy Advances Pokemon save files in the past, and already knew a decent amount about their structure. The save files are actually two saves: the most recent save, and a backup in case the most recent save gets corrupted. Each save is broken into 16 blocks, and each block holds data related to each other in some way. Only 14 of the blocks are used for Ruby, Sapphire, and Emerald.
+
+The amount of data in each block is important: it's used to calculate the checksum of a block and verify the block hasn't been corrupted. Each block can store a maximum of 0xF80 bytes, but the actual space used varies between games.
+
+Bulbapedia has the [size and description of each block](https://bulbapedia.bulbagarden.net/wiki/Save_data_structure_in_Generation_III#Section_ID), which I figured would be good to reference. Since Bulbapedia's sizes are for Pokemon Emerald, not Ruby or Sapphire, I also found a list of block sizes for the other games [in this post on ProjectPokemon](https://projectpokemon.org/home/forums/topic/35903-gen-3-mystery-eventgift-research/?do=findComment&comment=197751).
+
+`configureSaveStuff` roughly looks like:
+
+```cpp
+void configureSaveStuff() {
+  bool isENGOrJPNRubySapphire = G_GAME_CODE <= 0x11;
+
+  if (isENGOrJPNRubySapphire) {
+    // Not shown: Store hardcoded save offsets, such as the pokdex and party offsets, to global variables
+
+    // Sstore block sizes to global variables
+    G_SAVE_BLOCK_0_SIZE = 0x890;
+    G_SAVE_BLOCK_4_SIZE = 0xC40;
+  } else {
+    // Read values from the rom and save those values in the same globals as above
+    // This includes G_SAVE_BLOCK_0_SIZE, and G_SAVE_BLOCK_4_SIZE
+  }
+
+  for (u32 i = 0; i < 14; i++) {
+    if (i == 0) {
+      SOME_GLOBAL[0] = G_SAVE_BLOCK_0_SIZE;
+    } else if (i == 4) {
+      SOME_GLOBAL[4] = G_SAVE_BLOCK_4_SIZE;
+    } else {
+      SOME_GLOBAL[i] = 0xF80;
+    }
+  }
+}
+```
+
+The top part was setting offsets to various parts of the save file, as well as the size of blocks 0 and 4.
+
+If the game was an English or Japanese Ruby or Sapphire, Wishmaker used hardcoded save offsets. Any other game would read the save offsets and block sizes from the game cartridge.
+
+The remaining logic seemed to loop once per used save block and set the save size of the block, so I renamed `SOME_GLOBAL` to `G_SAVE_BLOCK_SIZES` and `configureSaveStuff` to `configureSaveOffsetsAndBlockSizes`. It's not a great name, but it certainly is descriptive.
+
+In my last blog post, I mentioned a prototype of the multiboot rom that was made in 2003. Pokemon Fire Red and Leaf Green were first released in 2004, so there's a strong chance the Wishmaker multiboot rom was in development at the same time as Fire Red and Leaf Green. Since those games were still in development, their block sizes and save offsets might not have been known during Wishmaker's development.
+
+It looks like the solution was to store the offsets and save sizes in the Fire Red and Leaf Green rom for Wishmaker to read. This would ensure Wishmaker wouldn't need to know the offset and block sizes.
+
+Interestingly, I dumped the rom from my Pokemon Emerald cartridge and verified that the offsets used by `configureSaveStuff` also holds the save offsets and save block sizes. I didn't see any indication that Wishmaker knew Emerald existed, so other apps besides Wishmaker must use these rom offsets as well.
+
+## Configuring the save interface
+
+`validateSave` _very_ roughly looks like:
+
+```cpp
+bool validateSave() {
+  bool result = func1();
+
+  // Enable timer for save handling
+
+  return result == false;
+}
+
+bool func1() {
+  u16 func2Result = func2();
+
+  while(true) {
+    u8* someStruct = constantData[i];
+
+    if (*(u16*)(someStruct + 0x28) == 0) {
+      // Store struct values in global variable
+      // Fail
+      return true;
+    }
+
+    if (*(u16*)(someStruct + 0x28) == func2Result) {
+      // Store struct values in global variable
+      // Success
+      return false;
+    }
+  }
+
+  // Success
+  return false;
+}
+```
+
+`func1` endlessly iterates over some constant data, and each iteration checks if a field on the constant data is 0 or matches `func2Result`. The function fails if the constant is 0, and succeeds otherwise.
+
+Looking at the data in `constantData`, I saw this could only occur for 3 iterations, as the third struct has 0 in field 0x28.
+
+Bytes in one of the structs:
+
+```
+5d 4f 01 02 e5 4d 01 02 59 4e 01 02
+45 4d 01 02 70 aa 01 02 00 00 02 00
+00 10 00 00 0c 00 20 00 00 00 00 00
+03 00 01 00 c2 09 00 00
+```
+
+Ghidra identified five offsets in the middle of the structs. Further inspection showed the first four were all routines. The last was a reference to another struct.
+
+Each struct had the same set of bytes, except for the u16 at 0x28, and a reference to another struct:
+
+```
+FUN_02014f5d
+FUN_02014de5
+FUN_02014e59
+FUN_02014d45
+STRUCT_REF_0201aa70
+00 00 02 00
+00 10 00 00 0c 00 20 00 00 00 00 00
+03 00 01 00
+09c2
+00 00
+```
+
+Three of the four routines referenced 0xE000000, 0xE002AAA, and 0xE005555, and the remaining routine referenced the other routines.
+
+A little searching of the numbers found [this GBA Flash documentation](https://dillonbeliveau.com/2020/06/05/GBA-FLASH.html), which describes the process used by the Gameboy Advance to talk with save chips on a game cartridge.
+
+In general, to talk with the save chips, the game writes:
+
+```
+0xE002AAA = 0x55
+0xE005555 = 0xAA
+// Command
+```
+
+Based on that, I learned field 0x28 used to store the flash chip Id in one of the routines. A list of [Gameboy Advance Flash chips](https://reinerziegler.de.mirrors.gg8.se/GBA/gba.htm) allowed me to label the chips each struct was using.
+
+With this new information, I was able to label all of the routines, and reverse engineer every other routine the routines in the struct called. Even condensed, there's too much information in those routines to put in this blog post, so I'll just skip to the final shape of the structs:
+
+```cpp
+enum SaveChipId {
+  // Only the chips being used are labeled
+  CHIP_MACRONIX = 0x09c2,
+  CHIP_SANYO = 0x1362,
+  CHIP_NONE = 0x0000,
+};
+
+struct TimerSetting {
+  u16 timeoutCounter;
+  u16 counter;
+  u16 control;
+};
+
+struct TimerSettings {
+  struct TimerSetting timer0;
+  struct TimerSetting timer1;
+  struct TimerSetting timer2;
+  struct TimerSetting timer3;
+};
+
+struct SaveConfig {
+  u32 saveSize;
+  u16 blockSize;
+  u16 unk1;
+  u8 blockShift; // Used to shift a block that will be erased, e.g. (0xA << blockShift) + 0xE0000000
+  u8 unk2;
+  u16 maxBlock;
+  u32 unk3;
+  u16 waitStateSetting;
+  u16 unk4;
+};
+
+struct SaveChip {
+  WriteDataToBlock writeDataToBlock;
+  EraseEntireSave eraseEntireSave;
+  EraseSaveBlock eraseSaveBlock;
+  WaitForResult waitForResult;
+  struct TimerSettings *timerSettings;
+  struct SaveConfig config;
+  enum SaveChipId chipId;
+};
+```
+
+The original bytes posted earlier would then become:
+
+```cpp
+#define TIMER_F_256 BIT(1)
+// Thanks to libgba for TIMER_IRQ and TIMER_START
+#define SAVE_TIMER_CONTROL TIMER_IRQ | TIMER_START | TIMER_F_256
+
+struct TimerSettings MacronixTimer = {
+    .timer0 = {.timeoutCounter = 0xA, .counter = 0xFFBD, .control = SAVE_TIMER_CONTROL},
+    .timer1 = {.timeoutCounter = 0xA, .counter = 0xFFBD, .control = SAVE_TIMER_CONTROL},
+    .timer2 = {.timeoutCounter = 0x7D0, .counter = 0xFFBD, .control = SAVE_TIMER_CONTROL},
+    .timer3 = {.timeoutCounter = 0x7D0, .counter = 0xFFBD, .control = SAVE_TIMER_CONTROL},
+};
+
+struct SaveChip Macronix = {
+      .writeDataToPage = writeDataToPage,
+      .eraseEntireSave = eraseEntireSave,
+      .eraseSavePage = eraseSavePage,
+      .waitForResult = waitForResult,
+      .timerSettings = &MacronixTimer,
+      .config = {
+          .saveSize = 0x20000,
+          .pageSize = 0x1000,
+          .unk1 = 0x0,
+          .pageShift = 0xC,
+          .unk2 = 0x0,
+          .maxPage = 0x20,
+          .unk3 = 0x0,
+          .waitStateSetting = 03,
+          .unk4 = 01,
+      },
+      .chipId = CHIP_MACRONIX,
+};
+```
+
+The original list of configurations:
+
+```cpp
+struct SaveChip *G_SAVE_CHIPS[3] = {
+    &Macronix,
+    &Sanyo,
+    &None,
+};
+```
+
+The original functions rewritten:
+
+```cpp
+bool configureAndValidateSaveConfig() {
+  u32 result = configureSaveChip();
+
+  // Enable timer for save handling
+
+  return result == 0;
+}
+
+bool configureSaveChip() {
+  u16 flashChipId = readFlashChipId();
+
+  for (u32 i = 0; i < 3; i++) {
+    struct SaveChip *saveChip = G_SAVE_CHIPS[i];
+
+    if (saveChip->chipId == CHIP_NONE) {
+      // Store struct values in global variable
+      // Fail
+      return true;
+    }
+
+    if (saveChip->chipId == flashChipId) {
+      // Store struct values in global variable
+      // Success
+      return false;
+    }
+  }
+
+  // Success
+  return 0;
+}
+```
+
+## The mystery solved
+
+`configureSaveChip` checks if the inserted cartridge uses a Macronix flash chip. If not, it checks if the cartridge uses a Sanyo flash chip. If neither of those succeed, the function will set the flash chip Id to "no chip" and fail.
+
+This explains the multiple "corrupted" errors: one of the errors actually means an unofficial cartridge was used.
+
+That has the potential to fail on ceratin emulators, so it should be patched as well.
+
+## Patching the chip Id check
+
+Based on what I said earlier, one would presume I wrote the patch by having `readFlashChipId` always return a valid chip Id. Normally I would, but I had a good reason to not do that in this case.
+
+The Wishmaker multiboot rom is almost entirely compressed with LZ77. Its entrypoint decompresses the compressed code, then jumps execution to the decompressed code.
+
+Had I made any changes to the decompressed code, recompressed it, then built a patch based off of that, the resulting patch would potentially contain a lot of the original code, which would be bad to distribute for obvious reasons, and defeats the purpose of being just a 'patch'.
+
+Due to how LZ77 works, there were a decent amount of instructions in the compressed binary that I was able to patch as if it were decompressed, and the decompressed binary was only patched in my intended locations.
+
+However, I didn't see a good way to patch the compressed `readFlashChipId` to return a valid chip Id without affecting other instructions when decompressed, so instead I patched `configureSaveChip`.
+
+The three different save chip structs are all identical except for the chip Id. For this reason, it really didn't matter which chip I chose to use, as they would all function identically. As long as `configureSaveChip` returned false, it would be good.
+
+## Final result
+
+After applying the two patches to the Wishmaker multiboot rom, it worked perfectly, and the two patches can be distributed as a single IPS file.
+
+It is now possible to get a Wishmaker Jirachi from a Gameboy Advance emulator without trying to mess with a Gamecube emulator.
+
+While gimmicky, it's also kind of fun to think about how it should also be possible to redeem a Wishmaker Jirachi using just a smartphone or Nintendo Switch with custom firmware.
+
+If you made it this far, thank you! I wasn't expecting that.
+
+<Button
+  component='a'
+  href='downloads/wishmaker-without-dolphin.ips'
+  color='primary'
+  variant='contained'
+  download
+>
+  Download the patch
+</Button>

@@ -1,0 +1,173 @@
+import WishmakerEntrypoint from './wishmaker-entry-system-calls.png';
+import HelloWorldHomebrew from './hello-world-homebrew.jpg';
+import FirstMultibootAttempt from './first-multiboot-attempt.jpg';
+import BootstrapHomebrew from './bootstrap-homebrew.jpg';
+import WorkingWishmaker from './working-wishmaker.jpg';
+
+export const metadata = {
+  title: 'Portable Wishmaker Jirachi Distributor',
+  description: 'Building a way to get a Wishmaker Jirachi without a Gamecube',
+  date: '01/01/2021',
+};
+
+# Portable Wishmaker Jirachi Distributor
+
+Growing up, I loved playing Pokemon on the Gameboy Advance. It had better graphics than its predecessor, a new part of the world to explore, and of course, new Pokemon. I had fun catching so many amazing Pokemon, but one eluded me: Jirachi.
+
+Jirachi is part of a class of Pokemon known as "Mythicals". These are traditionally more difficult to obtain and generally aren't available in normal gameplay.
+
+The Gameboy Advance era coincided with the Gamecube being a popular home console, and the Pokemon company had released a title for the Gamecube called Pokemon Colosseum. People who preordered Colosseum also got a special Colosseum bonus disc that could send Jirachi to a Pokemon game on a Gameboy Advance.
+
+The Gameboy Advance and Gamecube would communicate with each other through a special link cable. A player would load the Colosseum bonus disc on their Gamecube, turn on their Gameboy Advance with a Pokemon game inserted, watch a special animation, and have Jirachi added to their game. This Jirachi is known as the Wishmaker Jirachi, due to one of its in-game properties.
+
+This Jirachi can still be obtained today, but it's also still difficult. The Colosseum bonus disc is hard to find, and the cost can be pretty high. In addition, a Gamecube, Gamecube controller, and the special link cable are all required.
+
+About a week or two ago, I had the idea to make a portable Wishmaker distributor: a small device that could plug into a Gameboy Advance and serve the same function as a Gamecube with the Colosseum bonus disc.
+
+## Technical details
+
+The Gameboy Advance has a feature called "Multiboot". It allows executable binaries to be loaded onto the Gameboy Advance through the game link port normally used to connect multiple Gameboy Advances together for multiplayer games.
+
+When booted without a game cartridge, the Gameboy Advance can be sent a multiboot rom that the console will run. This has several applications:
+
+- Mini-games loaded from external sources (e.g. e-reader and Gamecube)
+- Multiplayer with only one game cartridge (e.g. a racing game can load a mini-version of itself on a friend's console who doesn't have the game)
+- Companion games (e.g. loading a map of a Gamecube game world on the Gameboy Advance)
+
+The Colosseum bonus disc transfers Jirachi by loading a multiboot rom onto the Gameboy Advance. The Gameboy Advance runs the multiboot rom, and the multiboot rom adds a Jirachi to the game cartridge inserted into the Gameboy Advance.
+
+With this in mind, the entire process of getting Jirachi is almost entirely contained within the Gameboy Advance. The Gamecube is purely a method of transporting the multiboot rom, so it should be possible to remove the Gamecube from the setup by replacing it with some other device that can load multiboot roms onto a Gameboy Advance.
+
+## Building a multiboot loader
+
+Having the ability to load arbitrary software onto a Gameboy Advance is not a new concept. For years, hobbiest developers have used this feature of the Gameboy Advance to load homebrew, custom homemade software, onto the Gameboy Advance.
+
+As a result, there have been lots of tools made over the years built for this exact purpose.
+
+I had a teensy 3.2 that I wanted to use for this project, so I set off on my journey to find someone who had already solved this problem.
+
+Over the years, the solutions to send multiboot roms to a Gameboy Advance from a computer have changed quite a bit. The first solution was to use a serial port on the computer. As modern computers lost their serial ports, [the solution was ported to arduinos](https://github.com/cartr/MSMCcable), which can interact with computers via usb.
+
+The arduino port largely kept the original code with small tweaks for the arduino. Unfortunately, this could no longer be compiled due to updates that have been made to the arduino since then.
+
+I found a more recent version by MerryMage that was built [to work with the teensy](https://github.com/MerryMage/gba-multiboot). Sadly, this too was several years out of date and wouldn't compile for the teensy 3.2.
+
+It didn't look like any other solution existed to serve the purpose I was looking for, so I had to update it myself.
+
+All of the previous versions used interrupts to time communication with the Gameboy Advance. Using interrupts can be useful for many situations, however it's also somewhat discouraged depending on the situation since interrupts can be error prone, aren't always easy to reason about, and the same results can often be accomplished in other ways.
+
+MerryMage's solution referenced some [technical documentation](http://www.akkit.org/info/gba_comms.html) that explained how the Gameboy Advance serial connection works, which allowed me to rewrite the communication. To ensure timing issues wouldn't occur, I slowed the teensy's processing speed down to a level the Gameboy Advance wouldn't have trouble communicating with.
+
+<Image src={HelloWorldHomebrew} />
+
+And it works! I was able to load the example ["Hello World" homebrew](https://github.com/MerryMage/gba-multiboot/tree/master/gba-hello-world) that was provided in MerryMage's multiboot loader. The next step was to load the Wishmaker multiboot rom.
+
+## Dumping the Wishmaker multiboot
+
+The Wishmaker multiboot file needed to be somewhere on the Colosseum bonus disc. The first step of examining any game's files is to get a copy of the game. I have a hacked Wii that can dump Gamecube and Wii games using a homebrew called [CleanRip](https://wiibrew.org/wiki/CleanRip).
+
+With the ISO in hand, I needed a way to mount the game so the files could be examined. With most USBs or discs, a computer will know how to mount the filesystem in a way that allows a user to interact with it like any other directory containing files. However Gamecube games use a special format that computers normally don't recognize.
+
+Being a Linux user, I'm pretty fond of using FUSE to tell my computer how to mount such files. A quick google search showed [gcfuse](https://github.com/multimediamike/gcfuse) provides this exact functionality.
+
+Fortunately, I found several files that looked like they would be of interest, and one that stood out had the `.tgc` extension. Online searches brought me to [this site](https://www.retroreversing.com/gamecube-file-formats#games-which-have-tgc-files-mostly-demos), which said the TGC format was used mostly for demos, and listed the Wishmaker Jirachi as an example.
+
+The TGC file is a Gamecube format, not a Gameboy Advance format, so the multboot rom needed to be extracted from the TGC file. Game consoles tend to have several unique formats, and communities of game hackers love to write the tools necessary to extract and modify those files.
+
+The next search result led me to [gctools](https://github.com/fuzziqersoftware/gctools), a collection of tools for Gamecube specific formats, and it happened to have a tool that supported TGC, [gcmdump](https://github.com/fuzziqersoftware/gctools/blob/master/gcmdump.cc). With this, I was able to extract several files from the TGC file.
+
+I had known from reading an old post on ProjectPokemon several months ago that the Colosseum bonus disc also included an unreleased (probably test) Jirachi: the Meteor Jirachi. Based on that, there were two files that looked like they would be what I was looking for: `client.bin` and `client.2003_1112.bin`.
+
+The file names and file sizes showed the two files were possibly different versions of the same file, and they were both small enough to be a multiboot rom. The phrase "client of pokedownload" also seemed like it would be the client sent to the Gameboy Advance to save Jirachi to a Pokemon game.
+
+A comparison of the files also showed similar rom headers.
+
+Finally, I sent `client.bin` to my console to see if it would load.
+
+<Image src={FirstMultibootAttempt} />
+
+It worked! Partially. Normally a message would be shown to tell the user the Jirachi was being sent to the game, which wasn't being shown.
+
+It turns out there are a few issues with getting the Wishmaker multiboot rom to load on a console in this way.
+
+## Loading Wishmaker without a Gamecube
+
+The Gameboy Advance only boots into multiboot roms when a game cartridge isn't inserted. However, the Wishmaker rom expects a game cartridge to be inserted into the Gameboy Advance so it can add a Jirachi to the cartridge's save file.
+
+To figure out how this works, I referenced a [disassembly of Pokemon Ruby and Sapphire by PRET](https://github.com/pret/pokeruby). This repository is an effort to disassemble the Pokemon games back into what their original C code probably looked like. There still are traces of assembly, but most things are labeled. This makes it a great place to look at how older games work.
+
+PRET's repository has [an entire file dedicated to the Gamecube multiboot](https://github.com/pret/pokeruby/blob/aa6947d5b11bd93fe36cb71377894a454287325b/src/libs/libgcnmultiboot.s).
+
+Ruby and Sapphire appear to continue accepting the multiboot rom after the game has loaded and jumps execution to the multiboot rom if it passes a few checks. There are a few times the multiboot rom will fail to load. Among other things:
+
+- The header or checksum is invalid
+- Data transfer is too slow
+- A handshake with the Gamecube is not successful
+
+The first scenario isn't a concern since I was already able to load a custom homebrew onto the console.
+
+The second scenario shouldn't be a problem, as I was able to load the Wishmaker fairly quickly with the teensy.
+
+The third scenario would cause issues since the teensy wasn't programmed to do a handshake after it started loading a multiboot rom.
+
+I started looking a little bit into what the Pokemon game was expecting of the Gamecube, but figured there was a faster way to work around this issue with some other added benefits.
+
+## Creating a bootstrap homebrew
+
+To boot into a multiboot rom, the Gameboy Advance requires no cartridge to be inserted, but the Wishmaker multiboot rom requires Pokemon Ruby or Sapphire inserted when it loads so it can add Jirachi.
+
+To work around this, Ruby and Sapphire jump execution to the multiboot rom. Rather than figuring out how the handshake between Ruby and Sapphire and the Gamecube worked, I decided to write a custom homebrew with a multiboot rom embedded in it. When it detected a cartridge was inserted, it would jump to the multiboot rom.
+
+Having the Gameboy Advance detect whether the cartridge was inserted or not would prevent a situation where the console was unable to read the cartridge (as is often the case with older game consoles).
+
+Another benefit with a custom homebrew is the future possibilities. A fun future design would be for the teensy to read multiboot roms off of an SD card. After the Gameboy Advance booted the bootstrap homebrew, it could ask the teensy for a list of available roms. When a cartridge is inserted, the user could select which rom they'd like to load onto their Gameboy Advance.
+
+In order to see how the console is able to detect if a game cart is inserted, I referenced another homebrew I have used several times by FIX94 called [gba-link-cable-dumper](https://github.com/FIX94/gba-link-cable-dumper). This homebrew runs on a Gamecube or Wii, sends a custom multiboot homebrew to a Gameboy Advance, and allows the Gameboy Advance to dump a cartridge's save or rom, among other things.
+
+I found what I needed inside of there and built the bootstrap homebrew. It didn't take too long, worked really well, and I even prototyped out a functional selection menu to boot from a list of multiboot roms.
+
+<Image src={BootstrapHomebrew} />
+
+The bootstrap homebrew worked great. However, this only solved the problem of loading the Wishmaker multiboot rom when a game cartridge is not inserted into the console. It didn't solve the issue of text not appearing when the Wishmaker multiboot rom starts.
+
+## Solving the blank text issue
+
+After some digging, I found FIX94 had another cool Gamecube/Wii homebrew that I thought might shed some insight into what I was seeing, [gba-link-cable-rom-sender](https://github.com/FIX94/gba-link-cable-rom-sender/). This is a Gamecube/Wii homebrew that takes a multiboot rom from the SD card and sends it to a Gameboy Advance; exactly what I was doing.
+
+As it turns out, there was [one issue](https://github.com/FIX94/gba-link-cable-rom-sender/issues/1) on that repo, and it was my exact problem. Some multiboot roms do a handshake with the Gamecube before running. I wondered if FIX94 decided to implement handshake handling to solve the issue, but they [opted to patch the multiboot rom to remove the handshake](https://github.com/FIX94/gba-link-cable-rom-sender/commit/702142150be526d09b608ba3f54f0239a1685e66).
+
+I felt it would be faster for me to go this same route rather than having the teensy emulate the Gamecube handshake. FIX94's patch is specific to the game listed on their project's issue. In order to get Wishmaker working, I needed to reverse engineer the game and patch it myself.
+
+## Patching out the handshake
+
+My reverse engineering tool of choice is Ghidra. Ghidra has a decent amount of plugins for loading binaries for all sorts of platforms, and the Gameboy Advance is no exception thanks to [SiD3W4y's GhidraGBA](https://github.com/SiD3W4y/GhidraGBA).
+
+At first, it appeared Ghidra had trouble loading the multiboot rom, and could only show me the entrypoint. I figured the rest was either compressed or encrypted, and would need some additional unpacking before I could see what I wanted to see.
+
+The entrypoint made three system calls.
+
+<Image src={WishmakerEntrypoint} />
+
+[This list of system calls in mgba](https://github.com/mgba-emu/mgba/blob/b3d97a4389840e539751b5b494ad0edb1dd7b793/include/mgba/internal/gba/bios.h#L17) showed the RAM was being reset and data was being decompressed. Referencing the last system call in [libgba also confirmed this](https://github.com/devkitPro/libgba/blob/master/src/Compression.c#L38-L42).
+
+To decompress the multiboot rom code, I had to find an LZ77 decompressor. I found such a script at the bottom of the [WiiBrew wiki's LZ77 page](https://wiibrew.org/wiki/LZ77#Example_Code).
+
+And with that, I was able to extract the compressed part of the multiboot rom, decompress it as a separate file, and load it into Ghidra.
+
+Thanks to [GBATEK's GBA technical documentation](https://mgba-emu.github.io/gbatek/), I was able to make sense of the hardware registers labeled by GhidraGBA. This allowed me to find the hardware registers for serial communication, see what other parts of the code referenced them, and find where the Gamecube handshake was occuring.
+
+With the location known, I was able to patch out the instruction that calls the handshake routine.
+
+<Image src={WorkingWishmaker} />
+
+## Final product
+
+Everything works!
+
+Normally the Gamecube plays an animation that looks like Jirachi flies around the screen before flying into the Gameboy Advance. A funny side effect of the teensy setup is how long it feels like the Gameboy Advance sits "talking to the Gamecube" since there is no animation to watch. I haven't timed it yet, but it feels like the Gamecube animation is a lot longer than I remember.
+
+It's not quite portable yet. The next steps for this project would be to enclose everything in a nice case and figure out a better way to plug it into the console. Either a link cable should plug in to the teensy and the Gameboy Advance or the teensy should appear almost like a thumbdrive that plugs into the console directly.
+
+The teensy should also read from an SD card. Since the teensy doesn't have enough space by itself, a computer has to send the custom homebrew to the teensy, which isn't as portable as I'd like it to be.
+
+The computer side should be able to run from a smartphone, so the current setup is more portable than lugging around a Gamecube and TV everywhere, but there are still iterations that can be made.
