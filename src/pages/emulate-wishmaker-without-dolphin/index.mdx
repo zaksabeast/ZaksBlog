@@ -43,7 +43,7 @@ Because this post is going to be pretty lengthy already, I'm only going to focus
 
 Normally the Wishmaker rom expects a cartridge inserted into the Gameboy Advance so it can access the save file on the cartridge.
 
-To an emulator, the game and save normally found on the cartridge can be two completely separate pieces of data, so the emulator should be able to load a Pokemon Ruby/Sapphire save without the a Pokemon Ruby/Sapphire game.
+To an emulator, the game and save normally found on the cartridge can be two completely separate pieces of data, so the emulator should be able to load a Pokemon Ruby/Sapphire save without a Pokemon Ruby/Sapphire game.
 
 When an emulator loads a game, it usually loads a save file with the same name, but with a `.sav` extension. For example, if the Wishmaker multiboot rom is called `wishmaker.bin`, then most emulators will try to load `wishmaker.sav`.
 
@@ -55,7 +55,7 @@ By naming the Ruby save to `wishmaker.sav`, the emulator loaded my Pokemon Ruby 
 
 It's widely known the Wishmaker Jirachi can only be sent to two games: Pokemon Ruby and Pokemon Sapphire. It would be a big problem if Wishmaker tried to overwrite data for a completely different game by mistake.
 
-Because Wishmaker checks to make sure the inserted game is Pokemon Ruby or Sapphire, but the rom running on the emulator is Wishmaker, I needed find where Wishmaker checks the inserted cartridge and patch it to think a valid cartridge is always inserted.
+Because Wishmaker checks to make sure the inserted game is Pokemon Ruby or Sapphire, but the rom running on the emulator is Wishmaker, I needed to find where Wishmaker checks the inserted cartridge and patch it to think a valid cartridge is always inserted.
 
 ## Finding the game check
 
@@ -376,7 +376,7 @@ void configureSaveStuff() {
   if (isENGOrJPNRubySapphire) {
     // Not shown: Store hardcoded save offsets, such as the pokdex and party offsets, to global variables
 
-    // Sstore block sizes to global variables
+    // Store block sizes to global variables
     G_SAVE_BLOCK_0_SIZE = 0x890;
     G_SAVE_BLOCK_4_SIZE = 0xC40;
   } else {
@@ -487,7 +487,7 @@ In general, to talk with the save chips, the game writes:
 // Command
 ```
 
-Based on that, I learned field 0x28 used to store the flash chip Id in one of the routines. A list of [Gameboy Advance Flash chips](https://reinerziegler.de.mirrors.gg8.se/GBA/gba.htm) allowed me to label the chips each struct was using.
+Based on that, I learned field 0x28 is used to store the flash chip Id in one of the routines. A list of [Gameboy Advance Flash chips](https://reinerziegler.de.mirrors.gg8.se/GBA/gba.htm) allowed me to label the chips each struct was using.
 
 With this new information, I was able to label all of the routines, and reverse engineer every other routine the routines in the struct called. Even condensed, there's too much information in those routines to put in this blog post, so I'll just skip to the final shape of the structs:
 
