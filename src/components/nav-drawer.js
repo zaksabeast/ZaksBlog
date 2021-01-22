@@ -35,9 +35,8 @@ export const NavDrawer = ({ isOpen, onClose }) => {
   const blogList = useBlogPostList();
 
   const guideCategories = blogList.sort().map(({ title, slug }) => {
-    const link = slug.slice(-1) === '/' ? slug.slice(0, -1) : slug;
     return (
-      <ListItem to={link} key={slug} role='link' button>
+      <ListItem to={slug} key={slug} role='link' button>
         <ListItemText>{title}</ListItemText>
       </ListItem>
     );
