@@ -4,7 +4,7 @@ import Typography from '@material-ui/core/Typography';
 import Table from '@material-ui/core/Table';
 import TableRow from '@material-ui/core/TableRow';
 import TableCell from '@material-ui/core/TableCell';
-import Link from '@material-ui/core/Link';
+import MUILink from '@material-ui/core/Link';
 import Paper from '@material-ui/core/Paper';
 import Highlight, { defaultProps } from 'prism-react-renderer';
 import prismTheme from 'prism-react-renderer/themes/vsDark';
@@ -47,6 +47,9 @@ const useStyles = makeStyles(theme => ({
   p: {
     marginBottom: theme.spacing(2),
   },
+  a: {
+    color: theme.palette.link.main,
+  },
   img: {
     marginTop: theme.spacing(4),
     marginBottom: theme.spacing(4),
@@ -60,6 +63,7 @@ const H1 = props => {
     <Typography variant='h3' component='h1' className={classes.h1} {...props} />
   );
 };
+
 const H2 = props => {
   const classes = useStyles();
   return (
@@ -111,6 +115,11 @@ const TableHead = props => <TableCell variant='head' {...props} />;
 const Paragraph = props => {
   const classes = useStyles();
   return <Typography className={classes.p} {...props} />;
+};
+
+const Link = props => {
+  const classes = useStyles();
+  return <MUILink className={classes.a} {...props} />;
 };
 
 const Code = ({ className, children }) => {
