@@ -1,0 +1,204 @@
+export const metadata = {
+  title: 'Safely testing unofficial 3ds servers',
+  description:
+    'Patching the 3ds to mitigate the risk when using unofficial 3ds game servers',
+  date: '02/18/2021',
+};
+
+# Safely testing unofficial 3ds servers
+
+The 3ds is no longer being manufactored and is at the end of its life, which means there's a high chance servers used by 3ds games to play online will be taken down at some point in the next few years. For preservation purposes and being able to enjoy past games, this is a good chance to start recreating online functionality for games.
+
+There are groups and people, such as [Pretendo](https://github.com/PretendoNetwork/) and [Kinnay](https://github.com/kinnay/), who are working to accomplish such a task.
+
+With a huge thanks to [documentation written by Kinnay](https://github.com/kinnay/NintendoClients/wiki) and [Stary2001's nex-dissector](https://github.com/Stary2001/nex-dissector), I was able to recreate Pokemon's Gen 7 GTS services a few years ago. The Gen 7 games rely on the 3ds friend services in order to play online, so I also recreated those as well.
+
+My initial attempt was partially to learn about the 3ds online services and partially to get something working, but I had intentions of rewriting it in the future. Originally, I wrote everything myself from the ground up to learn about the tiniest details of the 3ds online services. Recently, I started the rewrite using Kinnay's [NintendoClients library](https://github.com/kinnay/NintendoClients); it's well maintained, easy to use, and has had many features and improvements over the past several years.
+
+Testing my servers locally has been fine, but there were a few problems before I could ask other people to help test.
+
+## Problems with public testing
+
+The first problem is related to the friend services. As previously mentioned, 3ds games tend to rely on the friend services when going online. While I recreated functionality, it's super easy for the 3ds to get desynchronized from the official servers (e.g. different lists of friends), which is not good. As long as the official friend services are up, it's better for consoles to use those over unofficial solutions.
+
+The second problem is related to authentication. Authentication is how a user proves their identity to a server so only they can log in with their account. Each game has a pair of servers related to its online play: an authentication server and a game server. In order to locate the auth server, the 3ds talks to a server called NASC.
+
+This is a very rough flow of how a 3ds game connects to its game servers:
+
+1. The 3ds asks the NASC server for the game's auth server IP address
+2. The NASC server responds with the IP address of the auth server
+3. The 3ds authenticates with the auth server using a hidden user password, among other things
+4. The auth server responds with the IP address of the game server and a session token
+5. The 3ds starts communicating with the game server using the session token
+
+There's a bit more going on, but that's the general idea.
+
+Step 3 poses a problem. Every 3ds user has a hidden password that is used to go online. If someone wants to connect to one of my unofficial servers, or a server made by another developer, they would need to provide their password so the unofficial auth server knows the password the 3ds will try to use.
+
+It's a big security issue to disclose any password to someone. With the 3ds online services still operating, the password could be used in malicious ways.
+
+A smaller issue is the bad user experience of having to run some sort of homebrew or script to extract a console password and do something with it before being able to go online.
+
+There were other issues, but those two were at the top of my mind.
+
+I was left with two problems to solve:
+
+- The 3ds should use the official servers for friend services and unofficial servers for games
+- The 3ds should use the real password for friend services and a fake password for games
+
+Since the NASC server locates the game's auth server, and the auth server locates the actual server used to play online, I needed to make sure a 3ds would communicate with my custom NASC server, and everything else would fall into place.
+
+## Finding a patch target
+
+The 3ds operating system is broken into several system modules, similar to a microservice architecture. FRD is the system module responsible for friend services.
+
+A while ago I looked at [3dbrew's FRD savegame documentation](https://www.3dbrew.org/wiki/FRD_Savegame) and noticed the save includes the user's password for going online.
+
+This made me realize something important. Games shouldn't have access to the user's password, as that would be a security concern, and the password isn't likely to be copied between different system modules since that would be a larger attack surface. FRD must be solely responsible for talking with the auth servers for every game.
+
+This explains why there are a pair of servers for each game. If authentication took place within the game server, game developers would need access to user credentials, which puts user credentials at risk to a rogue developer or security issue within the server itself.
+
+If the auth server is separate from the game server, and FRD is the only thing that talks to the auth server, the flow looks like this:
+
+1. A game asks FRD for a session token
+2. FRD asks NASC for the game's auth server IP address
+3. NASC responds with the auth server's IP address
+4. FRD authenticates with the user credentials
+5. The auth server responds with a session token and the game server's IP address
+6. FRD gives the session token and IP address to the game
+
+If Nintendo owns the auth servers, then at worst a rogue developer or other security issue could only put tokens valid for a single session of a single game at risk. In this way, Nintendo doesn't need to trust game developers in order for them to build online functionality.
+
+This realization was important for two reasons:
+
+- FRD is solely responsible for talking with the NASC server
+- FRD is solely responsible for using the user's password
+
+The solutions to both of my original problems could be solved by patching the FRD system module.
+
+## Official friend servers and unofficial game servers
+
+I dumped the FRD system module and opened it in Ghidra. When it loaded, I searched for the string `nasc` and had three results show up: prod, test, and dev urls.
+
+All three of them were used in the same function that looked very roughly like this:
+
+```cpp
+void SOME_FUNCTION(char* param_0, int param_1) {
+  if (param_1 == 0) {
+    *param_0 = NASC_PROD_URL;
+  }
+
+  if (param_1 == 1) {
+    *param_0 = NASC_TEST_URL;
+  }
+
+  if (param_1 == 2) {
+    *param_0 = NASC_DEV_URL;
+  }
+}
+```
+
+After a little cleaning:
+
+```cpp
+enum Environment {
+  PROD,
+  TEST,
+  DEV,
+};
+
+void getNascUrl(char* url, Environment environment) {
+  if (environment == Environment::PROD) {
+    *url = NASC_PROD_URL;
+  }
+
+  if (environment == Environment::TEST) {
+    *url = NASC_TEST_URL;
+  }
+
+  if (environment == Environment::DEV) {
+    *url = NASC_DEV_URL;
+  }
+}
+```
+
+The production servers are used for regular users, and the test and dev environments are used to test and develop game servers.
+
+The function responsible for getting the NASC url was referenced in a few locations. If the friend services and games used the same code to get the NASC urls, it would make sense for the function to only be used in one location. Since the function was used in multiple locations, it made sense for the friend services to ask for the NASC url in a different place in the code than game servers.
+
+[Luma3ds (the 3ds custom firmware)](https://github.com/LumaTeam/Luma3DS) allows debugging 3ds software with GDB, so I conntected GDB to the FRD system module and set a breakpoint at the function. Afterwards, I went online with the friends applet and a Pokemon game to see which location of the code was responsible for getting the NASC url for the friend services and games.
+
+Indeed, they were different locations. I patched the code that gets the NASC url for game servers to use the test environment, instead of production. Then I patched the NASC test url to be a url that points to a server I control.
+
+When I went online, my 3ds connected to the official friend servers and my unofficial Pokemon servers.
+
+## Using a fake password
+
+The functions that use the `getNascUrl` function set up the HTTP request and call other functions to set up the request headers and body.
+
+Having already built a NASC server based on sniffing traffic from my 3ds to the official NASC server, I was fairly familiar with the content in the request body. However there was one part I hadn't seen before: the request body would conditionally send the user password, which isn't behavior I had observed.
+
+Incredibly roughly:
+
+```cpp
+void setNascBody(/* args */) {
+  // Add the normal fields to the request body
+
+  if (doesNotHaveUserId) {
+    getData(data);
+    setField(data, 'passwd');
+  } else {
+    // Set user Id and uid hmac
+  }
+}
+```
+
+If the user does not have a user Id, it sends the password in the nasc request, otherwise it sends the user Id. I didn't look into that behavior much, but I imagine that's for development and testing purposes.
+
+This was a great find because I didn't have to go digging for a place in FRD that uses the password.
+
+I set a breakpoint at the instruction checking for a user Id and forced the condition to be true when the breakpoint was hit. I was able to confirm the value truly was the password used to connect online and got the location of memory that held the password.
+
+I set a watchpoint at the location of memory holding the password to see when a routine accessed the password. When I went online in the Pokemon game, the watchpoint was hit, which gave me the routine responsible for using the password when games are connecting online. This was separate from the location used by the friend services.
+
+I wrote a quick patch for games to reference a static string built into the patch rather than using the user's actual password. When I restarted my 3ds with the new patch, I connected to the official friend servers with my real password and my unofficial Pokemon servers with my fake password.
+
+Having a plaintext password stored in a patch file is an obvious security risk, so this is only a temporary solution. It protects the user's real account as best as possible while building and testing servers, which was the original goal.
+
+## Running a fake NASC in the cloud
+
+Building an unofficial server locally is great for quick iterations, but the eventual goal is to run the server in the cloud for public access.
+
+When reading through [3dbrew's friend services documentation](https://www.3dbrew.org/wiki/Friend_Services), I found out FRD uses three root certificate authorities to verify the NASC server is a Nintendo server.
+
+I'm not going to go over how certificates work, just mention that they are used to verify the identity of an entity, such as a server. I higly recommend readers read up on how this works.
+
+Since my server is not an official Nintendo server, my server would be rejected by FRD unless I told FRD to use a root CA that can verify my server's identity.
+
+[Libctru](https://github.com/devkitPro/libctru/) is an open source library that reimplements much of an official library used for 3ds software development. Many of the functions found in libctru interact with system modules to do tasks, such as making HTTP requests by talking with the HTTP system module.
+
+While looking through libctru, I found a [function that adds a root CA](https://github.com/devkitPro/libctru/blob/0ed1f2beb22319c15714badcab7671fbf9c03377/libctru/source/services/httpc.c#L476-L490) to a request.
+
+I found several functions in FRD that interact with the HTTP system module, but not one to add a custom root CA to a request. So I rewrote that function in my patch and had it use a root CA embedded within the patch.
+
+A well known issue with the 3ds is that it does not support TLS 1.2. Unfortunately that means a NASC server currently needs to support the broken TLS 1.1. Hopefully a patch or reimplementation of the 3ds HTTPS communications can address this in the future. For now, it's something to be aware of when setting up a NASC server.
+
+The fastest way I thought to test this patch was to get a makeshift NASC server running in AWS (a cloud provider) by having an API Gateway serve a static file from an S3 bucket containing a NASC response (the same response can be used repeatedly without issue).
+
+I compiled my patch with the AWS root CA needed for the API Gateway, attempted to go online with Pokemon on my 3ds, and everything worked perfectly.
+
+## Conclusion
+
+I have a patch with the ability to use the official servers and real password for friend services, use unofficial servers and a fake password for games, and use TLS when communicating with the unofficial NASC (granted, it's a broken version of TLS).
+
+The patch is built with [armips](https://github.com/Kingcom/armips) and was designed for anyone building the patch to supply their own password, NASC url, and root CA. This should make it easy for any developer to build their own online systems, and have people test them safely.
+
+Ideally for public use, a website would exist where a user could download a unique patch to connect to unofficial servers.
+
+For better or for worse, an interesting side effect of the separation between auth servers and game servers is a potential central authority of unofficial 3ds accounts, and the central authority would not need to help maintain any game servers.
+
+For example, a group of people could maintain the auth infrastructure for unofficial game servers, and individual developers or groups not related to the auth team could create unofficial servers, similar to how I presume the official servers work today. This would make it easier for unofficial servers to be created since one team of people wouldn't have to create and maintain everything themselves.
+
+Thank you for reading this. You can find [the final patch here](https://github.com/zaksabeast/3ds-frd-unofficial-server-patch) if you're interested to see how it works.
+
+If anyone has any comments or questions, feel free to make a post on my blog's [discussion page](https://github.com/zaksabeast/ZaksBlog/discussions).
