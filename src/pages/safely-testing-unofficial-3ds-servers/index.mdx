@@ -7,6 +7,8 @@ export const metadata = {
 
 # Safely testing unofficial 3ds servers
 
+(This post was edited on February 20, 2021 after I looked into FRD more and found the original auth flow was incorrect.)
+
 The 3ds is no longer being manufactored and is at the end of its life, which means there's a high chance servers used by 3ds games to play online will be taken down at some point in the next few years. For preservation purposes and being able to enjoy past games, this is a good chance to start recreating online functionality for games.
 
 There are groups and people, such as [Pretendo](https://github.com/PretendoNetwork/) and [Kinnay](https://github.com/kinnay/), who are working to accomplish such a task.
@@ -54,25 +56,24 @@ The 3ds operating system is broken into several system modules, similar to a mic
 
 A while ago I looked at [3dbrew's FRD savegame documentation](https://www.3dbrew.org/wiki/FRD_Savegame) and noticed the save includes the user's password for going online.
 
-This made me realize something important. Games shouldn't have access to the user's password, as that would be a security concern, and the password isn't likely to be copied between different system modules since that would be a larger attack surface. FRD must be solely responsible for talking with the auth servers for every game.
+Games shouldn't have access to the user's password, as that would be a security concern, and the password isn't likely to be copied between different system modules since that would be a larger attack surface, so I figured FRD must be solely responsible for talking with the auth servers for every game.
 
-This explains why there are a pair of servers for each game. If authentication took place within the game server, game developers would need access to user credentials, which puts user credentials at risk to a rogue developer or security issue within the server itself.
+I looked into how the Gen 7 Pokemon games interact with FRD to go online and found out this was roughly the flow:
 
-If the auth server is separate from the game server, and FRD is the only thing that talks to the auth server, the flow looks like this:
+1. The game asks FRD for the game's auth server IP address, and the request is forwarded to NASC
+2. NASC responds with the auth server's IP address, which is forwarded to the game
+3. The game asks FRD for the user's password
+4. FRD responds with the user's password
+5. The game authenticates with the auth server and goes online
 
-1. A game asks FRD for a session token
-2. FRD asks NASC for the game's auth server IP address
-3. NASC responds with the auth server's IP address
-4. FRD authenticates with the user credentials
-5. The auth server responds with a session token and the game server's IP address
-6. FRD gives the session token and IP address to the game
+This was a bummer to find out. If Nintendo owned the auth servers, then at worst a rogue developer or other security issue could only put tokens valid for a single session of a single game at risk. In this way, Nintendo wouldn't need to trust game developers in order for them to build online functionality.
 
-If Nintendo owns the auth servers, then at worst a rogue developer or other security issue could only put tokens valid for a single session of a single game at risk. In this way, Nintendo doesn't need to trust game developers in order for them to build online functionality.
+But it turns out that was not the case: games access the password directly.
 
-This realization was important for two reasons:
+Regardless, this was important for two reasons:
 
-- FRD is solely responsible for talking with the NASC server
-- FRD is solely responsible for using the user's password
+- FRD is responsible for NASC server communications
+- FRD is the owner of user's password
 
 The solutions to both of my original problems could be solved by patching the FRD system module.
 
@@ -163,7 +164,7 @@ I set a watchpoint at the location of memory holding the password to see when a 
 
 I wrote a quick patch for games to reference a static string built into the patch rather than using the user's actual password. When I restarted my 3ds with the new patch, I connected to the official friend servers with my real password and my unofficial Pokemon servers with my fake password.
 
-Having a plaintext password stored in a patch file is an obvious security risk, so this is only a temporary solution. It protects the user's real account as best as possible while building and testing servers, which was the original goal.
+Having a plaintext password stored in a patch file is an obvious security risk, but considering a console with custom firmware can easily get the user's real password, there's not much that could be done either way. It protects the user's real password as best as possible while building and testing servers, which was the original goal.
 
 ## Running a fake NASC in the cloud
 
@@ -171,7 +172,7 @@ Building an unofficial server locally is great for quick iterations, but the eve
 
 When reading through [3dbrew's friend services documentation](https://www.3dbrew.org/wiki/Friend_Services), I found out FRD uses three root certificate authorities to verify the NASC server is a Nintendo server.
 
-I'm not going to go over how certificates work, just mention that they are used to verify the identity of an entity, such as a server. I higly recommend readers read up on how this works.
+I'm not going to go over how certificates work, just mention that they are used to verify the identity of an entity, such as a server. I highly recommend readers read up on how this works.
 
 Since my server is not an official Nintendo server, my server would be rejected by FRD unless I told FRD to use a root CA that can verify my server's identity.
 
@@ -197,7 +198,7 @@ Ideally for public use, a website would exist where a user could download a uniq
 
 For better or for worse, an interesting side effect of the separation between auth servers and game servers is a potential central authority of unofficial 3ds accounts, and the central authority would not need to help maintain any game servers.
 
-For example, a group of people could maintain the auth infrastructure for unofficial game servers, and individual developers or groups not related to the auth team could create unofficial servers, similar to how I presume the official servers work today. This would make it easier for unofficial servers to be created since one team of people wouldn't have to create and maintain everything themselves.
+For example, a group of people could maintain the auth infrastructure for unofficial game servers, and individual developers or groups not related to the auth team could create unofficial servers. This would make it easier for unofficial servers to be created since one team of people wouldn't have to create and maintain everything themselves.
 
 Thank you for reading this. You can find [the final patch here](https://github.com/zaksabeast/3ds-frd-unofficial-server-patch) if you're interested to see how it works.
 
